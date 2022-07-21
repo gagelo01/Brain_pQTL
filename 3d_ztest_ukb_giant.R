@@ -2,13 +2,15 @@
 library(data.table)
 library(tidyverse)
 library(GagnonMR)
-
+setwd("/mnt/sda/gagelo01/Projects/Brain_pQTL/")
 gwasvcf::set_bcftools()
 gwasvcf::set_plink()
 ldref<-"/home/couchr02/Mendel_Commun/Christian/LDlocal/EUR_rs"
 res_pwas <- fread( "Data/Modified/res_pwas.txt")
 res_map <- fread( "Data/Modified/res_map.txt")
-df_index <- fread("/mnt/sdf/gagelo01/Vcffile/server_gwas_id.txt")
+df_index <- fread("/mnt/sda/gagelo01/Vcffile/server_gwas_id.txt")
+dt_gene_region <- fread( "Data/Modified/dt_gene_region.txt")
+
 # susiesign <- fread("Data/Modified/susiesingstringent.txt" )
 res_pwas[,c(setdiff(colnames(res_pwas), colnames(res_map))) := NULL]
 res_map[, setdiff(colnames(res_map), colnames(res_pwas)) := NULL]
@@ -24,12 +26,12 @@ Z_test<- function(mean.x, mean.y, se.x, se.y, Ho = 0) {
                     z_stat_pval = pval))
 }
 
-ao <- fread("/mnt/sdf/gagelo01/Vcffile/available_outcomes_2021-10-13.txt")
-ao[id %in% list.files("/mnt/sdf/gagelo01/Vcffile/MRBase_vcf/")]
+ao <- fread("/mnt/sda/gagelo01/Vcffile/available_outcomes_2021-10-13.txt")
+ao[id %in% list.files("/mnt/sda/gagelo01/Vcffile/MRBase_vcf/")]
 
 idbmi <- c("ieu-a-835", "ukb-b-19953")
 sumstat<- lapply(as.list(idbmi), function(x)
-  gwasvcf::query_gwas(paste0("/mnt/sdf/gagelo01/Vcffile/MRBase_vcf/", x, "/", x, ".vcf.gz"), rsid = snp_z, proxies = "no") %>%
+  gwasvcf::query_gwas(paste0("/mnt/sda/gagelo01/Vcffile/MRBase_vcf/", x, "/", x, ".vcf.gz"), rsid = snp_z, proxies = "no") %>%
     gwasglue::gwasvcf_to_TwoSampleMR(.)) %>% rbindlist(.,fill=TRUE)
 
 sumstat_split <- split(sumstat, sumstat$SNP)
@@ -47,43 +49,42 @@ res_combine <- merge(res_combine[,.(exposure,  study, lead_snp.wald)], z_res, by
 setnames(res_combine, "lead_snp.wald", "SNP")
 fwrite(res_combine, "Data/Modified/ztest_ukb_giant.txt")
 
-
-
 ####banner rosmap
 res_pwas[,c(setdiff(colnames(res_pwas), colnames(res_map))) := NULL]
 res_map[, setdiff(colnames(res_map), colnames(res_pwas)) := NULL]
 res_combine <- rbindlist(list(res_pwas, res_map), fill = TRUE)
 res_combine <- distinct(res_combine)
-args <- res_combine[, .(lead_snp.wald, exposure) ] %>% distinct
+args <- res_combine[, .(lead_snp.wald, UniProt) ] %>% distinct
 args_list <- split(args, 1:nrow(args))
 
-
-comparestudyz <- function(exposure, SNP_z) {
-ID <- df_index[trait == exposure,]$id
+comparestudyz <- function(prot, SNP_z) {
+ID <- dt_gene_region[UniProt == prot,]$id
 sumstat<- lapply(as.list(ID), function(x){
   k <- tryCatch(expr = {
-    gwasvcf::query_gwas(paste0("/mnt/sdf/gagelo01/Vcffile/Server_vcf/", x, "/", x, ".vcf.gz"), rsid = SNP_z, proxies = "no", bfile = ldref) %>%
+    gwasvcf::query_gwas(paste0("/mnt/sda/gagelo01/Vcffile/Server_vcf/", x, "/", x, ".vcf.gz"), rsid = SNP_z, proxies = "no", bfile = ldref) %>%
     gwasglue::gwasvcf_to_TwoSampleMR(.) %>%
     as.data.table  }, error = function(e) {
-      return(data.table(exposure = exposure, SNP = SNP_z))
+      return(data.table(id.exposure = x, SNP = SNP_z))
     })
   k[, study := df_index[id == x, consortium]]
+  k[, study := study %>% gsub("None", "Yang", .)]
+  k[,id.exposure := x]
   return(k)}) %>% rbindlist(.,fill=TRUE)
 
-zres_wide<- dcast(sumstat, exposure ~ study, value.var = c("beta.exposure", "se.exposure"))
+sumstat <- merge(sumstat, dt_gene_region[,.(id,UniProt)], by.x = c("id.exposure"), by.y = c("id"))
+zres_wide<- dcast(sumstat, UniProt ~ study, value.var = c("beta.exposure", "se.exposure"))
 
-if(nrow(sumstat) == 1){return(cbind(zres_wide, presentinbothstudy = FALSE))}
+if(nrow(sumstat) == 1){return(cbind(zres_wide, SNP = SNP_z, presentin_nstudy = 1))}
 
-z_res <-Z_test(mean.x = sumstat[1,beta.exposure], mean.y = sumstat[2,beta.exposure],se.x = sumstat[1,se.exposure], se.y = sumstat[2,se.exposure])
-return(cbind(zres_wide, SNP= SNP_z, z_res, presentinbothstudy = TRUE))
+res <- mada::cochran.Q(x = sumstat$beta.exposure, weights = sumstat$se.exposure/1)
+
+return(cbind(zres_wide, SNP= SNP_z, as.data.table(as.list(res)), presentin_nstudy = sumstat[,.N]))
 }
 
 comparestudyz_safely <- safely(comparestudyz)
-rescompare <- map(args_list, function(x) comparestudyz(exposure = x$exposure, SNP_z = x$lead_snp.wald)) %>%
-  rbindlist(., fill = TRUE) %>% as.data.table
-
-rescompare[,z_stat_pval := NULL]
-rescompare[,heterogenous_zstatabove5 := ifelse(abs(z_stat)>5, TRUE, FALSE)]
-rescompare[heterogenous_zstatabove5==TRUE,]
+rescompare <- map(args_list, function(x) comparestudyz(prot = x$UniProt, SNP_z = x$lead_snp.wald)) %>%
+  rbindlist(., fill = TRUE) %>% 
+  as.data.table(.)
 
 fwrite(rescompare, "Data/Modified/ztest_rosmap_banner.txt")
+message("This script finished without errors")
