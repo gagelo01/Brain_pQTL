@@ -26,8 +26,6 @@ Z_test<- function(mean.x, mean.y, se.x, se.y, Ho = 0) {
                     z_stat_pval = pval))
 }
 
-ao <- fread("/mnt/sda/gagelo01/Vcffile/available_outcomes_2021-10-13.txt")
-ao[id %in% list.files("/mnt/sda/gagelo01/Vcffile/MRBase_vcf/")]
 
 idbmi <- c("ieu-a-835", "ukb-b-19953")
 sumstat<- lapply(as.list(idbmi), function(x)
@@ -42,49 +40,53 @@ if(nrow(zres) == 0) {zres<-data.frame(z_stat = NA, z_stat_pval = NA)}
 return(cbind(SNP = x$SNP[1],zres))}) %>% rbindlist(.,fill = TRUE)
 
 
+
 k<-sumstat[, paste(unique(exposure), collapse = "_"), by = "SNP"]
 k[, snpnotpresentingiant := !grepl("ieu-a-835", V1)]
 z_res <- merge(z_res,k[, .(SNP, snpnotpresentingiant)], by = "SNP" )
-res_combine <- merge(res_combine[,.(exposure,  study, lead_snp.wald)], z_res, by.x = "lead_snp.wald", by.y = "SNP") %>% distinct
+res_combine <- merge(res_combine[,.(exposure, UniProt,  study, lead_snp.wald)], z_res, by.x = "lead_snp.wald", by.y = "SNP") %>% distinct
 setnames(res_combine, "lead_snp.wald", "SNP")
+
+
+sumstat[, exposure:= exposure %>% gsub("UKB-b-19953", "UKB", .) %>% gsub("ieu-a-835", "GIANT", .)]
+k <- sumstat[,.(exposure, SNP, beta.exposure, se.exposure)]
+k<- data.table::dcast(k, SNP ~ exposure, value.var = c("beta.exposure", "se.exposure"))
+res_combine <- merge(k, res_combine, by = "SNP")
+
 fwrite(res_combine, "Data/Modified/ztest_ukb_giant.txt")
 
 ####banner rosmap
-res_pwas[,c(setdiff(colnames(res_pwas), colnames(res_map))) := NULL]
-res_map[, setdiff(colnames(res_map), colnames(res_pwas)) := NULL]
-res_combine <- rbindlist(list(res_pwas, res_map), fill = TRUE)
-res_combine <- distinct(res_combine)
-args <- res_combine[, .(lead_snp.wald, UniProt) ] %>% distinct
-args_list <- split(args, 1:nrow(args))
-
-comparestudyz <- function(prot, SNP_z) {
-ID <- dt_gene_region[UniProt == prot,]$id
-sumstat<- lapply(as.list(ID), function(x){
-  k <- tryCatch(expr = {
-    gwasvcf::query_gwas(paste0("/mnt/sda/gagelo01/Vcffile/Server_vcf/", x, "/", x, ".vcf.gz"), rsid = SNP_z, proxies = "no", bfile = ldref) %>%
-    gwasglue::gwasvcf_to_TwoSampleMR(.) %>%
-    as.data.table  }, error = function(e) {
-      return(data.table(id.exposure = x, SNP = SNP_z))
-    })
-  k[, study := df_index[id == x, consortium]]
-  k[, study := study %>% gsub("None", "Yang", .)]
-  k[,id.exposure := x]
-  return(k)}) %>% rbindlist(.,fill=TRUE)
-
-sumstat <- merge(sumstat, dt_gene_region[,.(id,UniProt)], by.x = c("id.exposure"), by.y = c("id"))
-zres_wide<- dcast(sumstat, UniProt ~ study, value.var = c("beta.exposure", "se.exposure"))
-
-if(nrow(sumstat) == 1){return(cbind(zres_wide, SNP = SNP_z, presentin_nstudy = 1))}
-
-res <- mada::cochran.Q(x = sumstat$beta.exposure, weights = sumstat$se.exposure/1)
-
-return(cbind(zres_wide, SNP= SNP_z, as.data.table(as.list(res)), presentin_nstudy = sumstat[,.N]))
-}
-
-comparestudyz_safely <- safely(comparestudyz)
-rescompare <- map(args_list, function(x) comparestudyz(prot = x$UniProt, SNP_z = x$lead_snp.wald)) %>%
-  rbindlist(., fill = TRUE) %>% 
-  as.data.table(.)
-
-fwrite(rescompare, "Data/Modified/ztest_rosmap_banner.txt")
+# args <- res_pwas[, .(lead_snp.wald, UniProt) ] %>% distinct
+# args_list <- split(args, 1:nrow(args))
+# 
+# comparestudyz <- function(prot, SNP_z) {
+# ID <- dt_gene_region[UniProt == prot,]$id
+# sumstat<- lapply(as.list(ID), function(x){
+#   k <- tryCatch(expr = {
+#     gwasvcf::query_gwas(paste0("/mnt/sda/gagelo01/Vcffile/Server_vcf/", x, "/", x, ".vcf.gz"), rsid = SNP_z, proxies = "no", bfile = ldref) %>%
+#     gwasglue::gwasvcf_to_TwoSampleMR(.) %>%
+#     as.data.table  }, error = function(e) {
+#       return(data.table(id.exposure = x, SNP = SNP_z))
+#     })
+#   k[, study := df_index[id == x, consortium]]
+#   k[, study := study %>% gsub("None", "Yang", .)]
+#   k[,id.exposure := x]
+#   return(k)}) %>% rbindlist(.,fill=TRUE)
+# 
+# sumstat <- merge(sumstat, dt_gene_region[,.(id,UniProt)], by.x = c("id.exposure"), by.y = c("id"))
+# zres_wide<- dcast(sumstat, UniProt ~ study, value.var = c("beta.exposure", "se.exposure"))
+# 
+# if(nrow(sumstat) == 1){return(cbind(zres_wide, SNP = SNP_z, presentin_nstudy = 1))}
+# 
+# res <- mada::cochran.Q(x = sumstat$beta.exposure, weights = sumstat$se.exposure/1)
+# 
+# return(cbind(zres_wide, SNP= SNP_z, as.data.table(as.list(res)), presentin_nstudy = sumstat[,.N]))
+# }
+# 
+# comparestudyz_safely <- safely(comparestudyz)
+# rescompare <- map(args_list, function(x) comparestudyz(prot = x$UniProt, SNP_z = x$lead_snp.wald)) %>%
+#   rbindlist(., fill = TRUE) %>% 
+#   as.data.table(.)
+# 
+# fwrite(rescompare, "Data/Modified/ztest_rosmap_banner.txt")
 message("This script finished without errors")
